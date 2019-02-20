@@ -9,11 +9,11 @@ Live-reloading HTTP reverse proxy for web development.
   [Watchman](https://facebook.github.io/watchman/).
 * Reloads after anything is modified (respecting
   [.watchmanconfig](https://facebook.github.io/watchman/docs/config.html))
-* "Stalls" HTTP connections until the under-development web server starts
+* Queues HTTP connections until the under-development web server starts
   listening for connections.
 * Presents a `503 Service Unavailable` error page with debug info if the
   under-development web server shuts down.
-* Supports WebSockets.
+* Supports WebSockets connections to the underlying server.
 
 # Usage
 

@@ -69,15 +69,18 @@ class Frontend:
         )
 
         async with livereload_server as livereload_ws_server:
-            backend = Backend(self.backend_addr, self.backend_command)
+            async def notify_backend_change():
+                tasks = {websocket.send(json.dumps({'command': 'reload',
+                                                    'path': '/'}))
+                         for websocket in livereload_ws_server.websockets}
+                if tasks:
+                    await asyncio.wait(tasks)
+
+            backend = Backend(self.backend_addr, self.backend_command,
+                              notify_backend_change)
 
             def reload():
                 backend.reload()
-                for websocket in livereload_ws_server.websockets:
-                    asyncio.create_task(websocket.send(json.dumps({
-                        'command': 'reload',
-                        'path': '/',
-                    })))
 
             server = await asyncio.start_server(backend.on_frontend_connected,
                                                 bind_host, bind_port)

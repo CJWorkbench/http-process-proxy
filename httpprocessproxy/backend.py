@@ -5,7 +5,7 @@ import logging
 import re
 import subprocess
 import sys
-from typing import List, Optional, Set
+from typing import Callable, List, Optional, Set
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,36 @@ async def _read_http_header(reader: asyncio.StreamReader) -> HTTPHeader:
     return HTTPHeader(content)
 
 
+async def _pipe_bytes(reader: asyncio.StreamReader,
+                      writer: Optional[asyncio.StreamWriter],
+                      n_bytes: Optional[int]=None) -> None:
+    """
+    Pipe bytes from `reader` to `writer`.
+
+    If `n_bytes` is supplied, stop after exactly that many bytes have been
+    copied.
+
+    Stops when `reader` runs out of bytes. TODO raise error if we expected
+    more?
+    """
+    block_size = 1024 * 50  # stream 50kb at a time, for progressive loading
+    n_remaining = n_bytes
+
+    while (n_remaining is None or n_remaining > 0) and not reader.at_eof():
+        if n_remaining is None:
+            n = block_size
+        else:
+            n = min(n_remaining, block_size)
+
+        block = await reader.read(n)
+        if block and writer is not None:
+            writer.write(block)
+            await writer.drain()
+
+        if n_remaining is not None:
+            n_remaining -= len(block)
+
+
 async def _pipe_http_body(header: HTTPHeader, reader: asyncio.StreamReader,
                           writer: Optional[asyncio.StreamWriter]) -> None:
     """
@@ -86,174 +116,15 @@ async def _pipe_http_body(header: HTTPHeader, reader: asyncio.StreamReader,
     """
     is_chunked = header.is_transfer_encoding_chunked
     content_length = header.content_length
-    block_size = 1024 * 50  # stream 50kb at a time, for progressive loading
 
     if is_chunked:
         raise NotImplementedError
     elif content_length is not None:
-        n_remaining = content_length
-        while n_remaining > 0 and not reader.at_eof():
-            n = min(n_remaining, block_size)
-            block = await reader.read(n)
-
-            if block and writer is not None:
-                writer.write(block)
-                await writer.drain()
-
-            n_remaining -= len(block)
+        await _pipe_bytes(reader, writer, content_length)
     else:
         # No Content-Length, no Transfer-Encoding: chunked -> there's no body
         # and so we're already done.
         pass
-
-
-class BackendHTTPProtocol(asyncio.Protocol):
-    def __init__(self, frontend_protocol):
-        self.frontend_protocol = frontend_protocol
-
-    # override
-    def connection_made(self, transport):
-        self.transport = transport
-        self.frontend_protocol.backend_connection_made(self)
-
-    # override
-    def connection_lost(self, exc):
-        if exc:
-            logger.exception('Backend connection lost')
-        else:
-            logger.info(
-                'Backend connection lost; aborting frontend connection'
-            )
-        self.frontend_protocol.transport.abort()
-
-    # override
-    def data_received(self, data):
-        self.frontend_protocol.transport.write(data)
-
-    # override
-    def eof_received(self):
-        self.frontend_protocol.transport.write_eof()
-
-
-class FrontendHTTPProtocol(asyncio.Protocol):
-    """
-    A connection from the client web browser to our proxy-server frontend.
-
-    This may exist even when the backend server is offline. In that case, we
-    buffer request data.
-
-    This goes through these states, in order:
-
-        1. `self.http_buffer` buffers request.
-        2. `self.backend_connection` is set; `self.http_buffer` is flushed and
-           deleted. Data is piped from frontend to backend and vice-versa.
-        3. `self.is_connection_lost` is set; everything is closed.
-
-    Step 2 may be skipped.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.is_connection_lost = False
-        self.backend_connection = None
-
-        # Buffer request, while the backend is unavailable. If
-        # `self.http_buffer.eof`, the entire request has been received.
-        self.http_buffer = HTTPBuffer()
-
-        # Has the backend sent us the start of an HTTP response? (If so, we
-        # can't use override_response.)
-        self.is_response_sending = False
-
-        self.override_response = None
-
-    def start_connect_to_backend(self, config: BackendConfig) -> None:
-        """
-        Queue a backend connection to serve this frontend HTTP request.
-        """
-        asyncio.create_task(self._connect_to_backend(config))
-
-    def abort(self):
-        if self.transport:
-            self.transport.close()
-
-    async def _connect_to_backend(self, config: BackendConfig) -> None:
-        loop = asyncio.get_running_loop()
-        transport, protocol = await loop.create_connection(
-            partial(BackendHTTPProtocol, self),
-            config.host,
-            config.port
-        )
-
-    def report_process_exit(self, code: int) -> None:
-        """
-        Set self.override_response: we'll respond to each request with 503.
-        """
-
-        message = b'\n'.join([
-            b'Server process exited with code ' + str(returncode).encode('utf-8'),
-            b'Read console logs for details.',
-            b'Edit code to restart the server.',
-        ])
-
-        self.override_response = b'\r\n'.join([
-            b'HTTP/1.1 503 Service Unavailable',
-            b'Content-Type: text/plain; charset=utf-8',
-            b'Content-Length: ' + str(len(message)).encode('utf-8'),
-            b'',
-            message
-        ])
-
-        if self.http_buffer is not None and self.http_buffer.eof:
-            self.http_buffer = None
-            self.transport.write(self.override_response)
-            self.transport.write_eof()
-
-    # override
-    def connection_made(self, transport):
-        self.transport = transport
-
-    def backend_connection_made(self, backend_connection):
-        if self.is_connection_lost:
-            backend_connection.transport.close()
-        else:
-            for block in self.http_buffer.blocks:
-                backend_connection.transport.write(block)
-            if self.http_buffer.eof:
-                backend_connection.transport.write_eof()
-            self.backend_connection = backend_connection
-            self.http_buffer = None
-
-    # override
-    def connection_lost(self, exc):
-        if exc:
-            logger.exception('Client-to-frontend connection lost', exc)
-        else:
-            logger.info('Client-to-frontend connection lost')
-        self.is_connection_lost = True
-        self.http_buffer = None
-        if self.backend_connection:
-            self.backend_connection.transport.close()
-        self.backend_connection = None
-
-    # override
-    def data_received(self, data):
-        if self.is_connection_lost:
-            return
-        elif self.backend_connection is None:
-            self.http_buffer.blocks.append(data)
-        else:
-            self.backend_connection.transport.write(data)
-
-    # override
-    def eof_received(self):
-        if self.override_response is not None:
-            self.transport.write(self.override_response)
-            self.transport.write_eof()
-        elif self.backend_connection is None:
-            self.http_buffer.eof = True
-        else:
-            self.backend_connection.transport.write_eof()
 
 
 class State:
@@ -271,6 +142,14 @@ class State:
                               asyncio.StreamWriter):
         """
         Handle user-initiated HTTP connection.
+        """
+
+    async def next_state(self):
+        """
+        Run state-specific logic until the state is done.
+
+        Return (want_change_notify, next_state). want_change_notify means
+        clients should refresh, as the next response's output may change.
         """
 
 
@@ -352,6 +231,16 @@ class ProxiedConnection:
         await _pipe_http_body(response_header, backend_reader,
                               self.frontend_writer)
 
+        if response_header.content.startswith(b'HTTP/1.1 101'):
+            # HTTP 101 Switching Protocol: this is no longer an HTTP/1.1
+            # connection, so the HTTP/1.1 rules don't apply. It's probably
+            # Websockets, which has bidirectional traffic. Pipe everything
+            # simultaneously.
+            await asyncio.gather(
+                _pipe_bytes(self.frontend_reader, backend_writer),
+                _pipe_bytes(backend_reader, self.frontend_writer)
+            )
+
     def _munge_header_bytes(self, header_bytes: bytes) -> bytes:
         """
         Add or modify `Forwarded` header.
@@ -431,20 +320,18 @@ class StateLoading(State):
 
         if self.killed.is_set():
             process.kill()
-            return StateKilling(self.config, process, self.connections)
+            return (False,
+                    StateKilling(self.config, process, self.connections))
         elif process.returncode is not None:
             for connection in self.connections: # TODO make errors
                 connection.report_process_exit(process.returncode)
-            return StateError(self.config, process.returncode)
+            return (False, StateError(self.config, process.returncode))
         else:  # we've connected, and `process` is running
             # Make each connection connect to the backend
             [ProxiedConnection(self.config, c.frontend_reader,
                                c.frontend_writer)
              for c in self.connections]
-            return StateRunning(
-                self.config,
-                process
-            )
+            return (False, StateRunning(self.config, process))
 
     async def _poll_until_accept_or_die_or_kill(self, process):
         """
@@ -457,26 +344,25 @@ class StateLoading(State):
 
         while not self.killed.is_set() and process.returncode is None:
             logger.debug('Trying to connect')
-            connect_task = asyncio.create_task(
-                asyncio.open_connection(self.config.host, self.config.port)
-            )
+
+            poll_task = asyncio.create_task(self._poll_once())
 
             done, pending = await asyncio.wait(
-                {connect_task, killed_task, died_task},
+                {poll_task, killed_task, died_task},
                 return_when=asyncio.FIRST_COMPLETED
             )
 
-            if connect_task in done:
+            if poll_task in done:
                 # The connection either succeeded or raised.
 
                 try:
-                    reader, writer = connect_task.result()  # or raise
-                    writer.close()
+                    poll_task.result()  # or raise
                     break  # The connection succeeded
                 except (
                     asyncio.TimeoutError,
                     OSError,
-                    ConnectionRefusedError
+                    ConnectionRefusedError,
+                    ConnectionResetError
                 ) as err:
                     # The connection raised -- it didn't succeed
                     logger.debug('Connect poll failed (%s); will retry',
@@ -487,6 +373,20 @@ class StateLoading(State):
 
         died_task.cancel()
         killed_task.cancel()
+
+    async def _poll_once(self):
+        """
+        Return if we can make an HTTP request (regardless of response).
+
+        Raise otherwise.
+        """
+        reader, writer = await asyncio.open_connection(self.config.host,
+                                                       self.config.port)
+        writer.write(b'HEAD / HTTP/1.1\r\n\r\n')
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await reader.readline()
 
 
 @dataclass(frozen=True)
@@ -519,11 +419,11 @@ class StateRunning(State):
         if killed_task in done:
             self.process.kill()
             # The connections will all fail on their own
-            return StateKilling(self.config, self.process)
+            return (True, StateKilling(self.config, self.process))
         else:
             for connection in self.connections:
                 connection.report_process_exit(self.process.returncode)
-            return StateError(self.config, self.process.returncode)
+            return (True, StateError(self.config, self.process.returncode))
 
 
 @dataclass(frozen=True)
@@ -591,9 +491,12 @@ class StateError(State):
     async def next_state(self):
         """
         Waits for reload signal, then switches to StateLoading.
+
+        Clients should refresh after this switch, because the response may
+        change.
         """
         await self.reload.wait()
-        return StateLoading(self.config)
+        return (True, StateLoading(self.config))
 
 
 @dataclass(frozen=True)
@@ -613,25 +516,30 @@ class StateKilling(State):
         Waits for kill to complete, then switches to StateLoading.
         """
         await self.process.wait()
-        return StateLoading(self.config, self.connections)
+        return (False, StateLoading(self.config, self.connections))
 
 
 class Backend:
-    def __init__(self, backend_addr: str, backend_command: List[str]):
+    def __init__(self, backend_addr: str, backend_command: List[str],
+                 notify_backend_change: Callable):
         backend_host, backend_port = backend_addr.split(':')
-        self.backend_host = backend_host
-        self.backend_port = int(backend_port)
-        self.backend_command = backend_command
+        self.config = BackendConfig(
+            backend_command,
+            backend_host,
+            backend_port,
+        )
+        self.notify_backend_change = notify_backend_change
 
     async def run_forever(self):
-        config = BackendConfig(self.backend_command, self.backend_host,
-                               self.backend_port)
         # Start with state=error because we expect to receive a `.reload()`
         # nearly immediately.
-        self.state = StateError(config, 0)
+        self.state = StateError(self.config, 0)
         while True:
-            self.state = await self.state.next_state()
+            want_notify, self.state = await self.state.next_state()
             logger.info('Reached state %r', type(self.state))
+            if want_notify:
+                logger.info('Notifying of state change')
+                await self.notify_backend_change()
 
     def reload(self):
         logger.info('Reloading')
