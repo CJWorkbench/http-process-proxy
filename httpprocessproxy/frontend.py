@@ -1,53 +1,13 @@
 import asyncio
-import base64
-from dataclasses import dataclass
-import hashlib
-from http import HTTPStatus
-import json
 import logging
-from pathlib import Path
-import re
 from typing import List
-import websockets
-from websockets.framing import Frame
+from . import livereload
 from .backend import Backend
 from .watcher import Watcher
 
 
 #logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-LIVERELOAD_BYTES = (Path(__file__).parent / 'livereload.js').read_bytes()
-
-
-# override
-def _process_livereload_request(path, headers):
-    if path.startswith('/livereload.js'):
-        return (
-            HTTPStatus.OK,
-            {
-                'Content-Type': 'application/javascript',
-                'Content-Length': str(len(LIVERELOAD_BYTES)),
-                'Access-Control-Allow-Origin': '*',
-            },
-            LIVERELOAD_BYTES
-        )
-    # otherwise, fallback to Websockets-handling
-
-
-async def _handle_livereload(websocket, _path: str):
-    client_hello_str: str = await websocket.recv()
-    client_hello = json.loads(client_hello_str)
-    logger.info('LiveReload client HELLO: %r', client_hello)
-
-    await websocket.send(json.dumps({
-        'command': 'hello',
-        'protocols': ['http://livereload.com/protocols/official-7'],
-        'serverName': 'http-process-proxy',
-    }))
-    logger.info('Sent server HELLO')
-
-    async for message in websocket:
-        logger.debug('LiveReload message: %r', message)
 
 
 class Frontend:
@@ -61,23 +21,9 @@ class Frontend:
     async def serve_forever(self):
         bind_host, bind_port = self.bind_addr.split(':')
 
-        livereload_server = websockets.serve(
-            _handle_livereload,
-            bind_host,
-            35729,
-            process_request=_process_livereload_request
-        )
-
-        async with livereload_server as livereload_ws_server:
-            async def notify_backend_change():
-                tasks = {websocket.send(json.dumps({'command': 'reload',
-                                                    'path': '/'}))
-                         for websocket in livereload_ws_server.websockets}
-                if tasks:
-                    await asyncio.wait(tasks)
-
+        async with livereload.serve(bind_host) as livereload_server:
             backend = Backend(self.backend_addr, self.backend_command,
-                              notify_backend_change)
+                              livereload_server.notify)
 
             def reload():
                 backend.reload()
