@@ -26,5 +26,8 @@ setup(
         "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
         "Topic :: Software Development :: Build Tools",
     ],
-    install_requires=['pywatchman>=1.4.1']
+    install_requires=[
+        'pywatchman>=1.4.1',
+        'websockets>=7.0'
+    ]
 )
