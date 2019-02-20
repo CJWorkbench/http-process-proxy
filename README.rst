@@ -58,10 +58,10 @@ Features
 Develop
 ~~~~~~~
 
-# ``pip3 install --user -e .[dev]`` to install development tools.
+#. Run ``pip3 install --user -e .[dev]`` to install development tools.
 #. Change some code.
 #. If needed, modify the *Features* and *Usage* sections in this file.
-#. ``./reformat-source.sh``
+#. Fix styles with ``./reformat-source.sh``
 #. Manually test according to the *Features* and *Usage* sections in this file.
    (This project is an experiment; it's missing automated tests.)
 #. Submit a pull request.
@@ -71,11 +71,11 @@ Maintain
 
 Use `semver <https://semver.org/>`_.
 
-#. Accept pull requests.
-#. Change ``__version__`` in ``httpprocessproxy/__init__.py``.
-#. ``git commit httpprocessproxy/__init__.py -m 'vX.X.X'`` but don't push.
-#. ``git tag vX.X.X``
-#. ``git push --tags && git push``
+#. Merge pull requests.
+#. Change: ``__version__`` in ``httpprocessproxy/__init__.py``.
+#. Commit: ``git commit httpprocessproxy/__init__.py -m 'vX.X.X'`` but don't push.
+#. Tag: ``git tag vX.X.X``
+#. Push the new tag: ``git push --tags && git push``
 
 TravisCI will push to PyPi.
 
