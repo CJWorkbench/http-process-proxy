@@ -92,6 +92,7 @@ Use `semver <https://semver.org/>`_.
 
 #. Merge pull requests.
 #. Change: ``__version__`` in ``httpprocessproxy/__init__.py``.
+#. Add ``CHANGELOG.rst`` entry to the top of the file.
 #. Commit: ``git commit httpprocessproxy/__init__.py -m 'vX.X.X'`` but don't push.
 #. Tag: ``git tag vX.X.X``
 #. Push the new tag: ``git push --tags && git push``
