@@ -528,9 +528,7 @@ class Backend:
         self.notify_backend_change = notify_backend_change
 
     async def run_forever(self):
-        # Start with state=error because we expect to receive a `.reload()`
-        # nearly immediately.
-        self.state = StateError(self.config, 0)
+        self.state = StateLoading(self.config)
         while True:
             want_notify, self.state = await self.state.next_state()
             logger.info("Reached state %r", type(self.state))

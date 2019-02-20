@@ -28,6 +28,13 @@ def main():
         help="pattern(s) to watch, e.g. 'src/**/*.html' (default '**/*')",
     )
     parser.add_argument(
+        "-x",
+        "--exclude",
+        type=str,
+        nargs="+",
+        help="pattern(s) to NOT watch, e.g. 'src/**/test_*' (overrides -p)",
+    )
+    parser.add_argument(
         "--exec",
         required=True,
         metavar="BACKENDCOMMAND",
@@ -44,6 +51,7 @@ def main():
         args.backend_addr,
         os.getcwd(),
         args.pattern or [],
+        args.exclude or [],
     )
     asyncio.run(frontend.serve_forever())
 

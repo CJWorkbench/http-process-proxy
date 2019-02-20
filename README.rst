@@ -25,6 +25,7 @@ First, you need a web server for http-process-proxy to invoke. Then wrap it::
 
     http-process-proxy localhost:8000 8001 \
         --pattern 'src/**/*' \
+        --exclude 'src/**/test_*' \
         --exec python ./manage.py runserver --noreload 8001
 
 That is::
@@ -40,8 +41,11 @@ Where:
   which must listen on ``BACKEND:PORT``.
 * ``OPTIONS`` can include:
   * ``--pattern`` with any number of glob-style paths. Files matching *any* of
-    the patterns can trigger a reload. (If unset, *any* file change triggers a
-    reload -- the same effect as ``**/*``.)
+    the patterns (and not matching an ``--exclude`` pattern) can trigger a
+    reload. (If unset, *any* file change triggers a reload -- the same effect
+    as ``**/*``.)
+  * ``--exclude`` with any number of glob-style paths. Files matching *any* of
+    the patterns will never trigger a reload -- regardless of ``--pattern``.
 
 Features
 ~~~~~~~~

@@ -7,7 +7,7 @@ from . import livereload
 from .backend import Backend
 from .watcher import Watcher
 
-# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +18,7 @@ class Frontend:
     backend_addr: str
     watch_path: str
     watch_patterns: List[str]  # empty means '**/*'
+    watch_exclude_patterns: List[str]  # empty means '**/*'
 
     async def serve_forever(self):
         bind_host, bind_port = self.bind_addr.split(":")
@@ -34,7 +35,12 @@ class Frontend:
                 backend.on_frontend_connected, bind_host, bind_port
             )
 
-            watcher = Watcher(self.watch_path, self.watch_patterns, reload)
+            watcher = Watcher(
+                self.watch_path,
+                self.watch_patterns,
+                self.watch_exclude_patterns,
+                reload,
+            )
             watcher.watch_forever_in_background()
 
             done, pending = await asyncio.wait(
