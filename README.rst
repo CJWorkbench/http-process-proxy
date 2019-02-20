@@ -24,6 +24,7 @@ Usage
 First, you need a web server for http-process-proxy to invoke. Then wrap it::
 
     http-process-proxy localhost:8000 8001 \
+        --pattern 'src/**/*' \
         --exec python ./manage.py runserver --noreload 8001
 
 That is::
@@ -37,6 +38,10 @@ Where:
 * ``BACKEND:PORT`` is the address of the server we're proxying
 * ``BACKENDCOMMAND ...`` is the command to run the web-server we're developing,
   which must listen on ``BACKEND:PORT``.
+* ``OPTIONS`` can include:
+  * ``--pattern`` with any number of glob-style paths. Files matching *any* of
+    the patterns can trigger a reload. (If unset, *any* file change triggers a
+    reload -- the same effect as ``**/*``.)
 
 Features
 ~~~~~~~~
@@ -65,6 +70,16 @@ Develop
 #. Manually test according to the *Features* and *Usage* sections in this file.
    (This project is an experiment; it's missing automated tests.)
 #. Submit a pull request.
+
+A useful test procedure (for testing everything but Websockets)::
+
+    python3 -m httpprocessproxy localhost:8010 localhost:8011 \
+         --exec sh -c 'sleep 0.1 && python3 -m http.server 8011'
+
+    # browse to http://localhost:8010 for a directory listing
+    # Turn on LiveReload
+    touch x  # browser should show an extra file
+    rm x  # browser should hide the extra file
 
 Maintain
 ~~~~~~~~

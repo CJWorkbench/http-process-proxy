@@ -21,6 +21,13 @@ def main():
         help="ADDRESS:PORT of backend server",
     )
     parser.add_argument(
+        "-p",
+        "--pattern",
+        type=str,
+        nargs="+",
+        help="pattern(s) to watch, e.g. 'src/**/*.html' (default '**/*')",
+    )
+    parser.add_argument(
         "--exec",
         required=True,
         metavar="BACKENDCOMMAND",
@@ -32,7 +39,11 @@ def main():
     args = parser.parse_args()
 
     frontend = Frontend(
-        os.getcwd(), args.bind_addr, args.backend_addr, args.backend_command
+        args.bind_addr,
+        args.backend_command,
+        args.backend_addr,
+        os.getcwd(),
+        args.pattern or [],
     )
     asyncio.run(frontend.serve_forever())
 

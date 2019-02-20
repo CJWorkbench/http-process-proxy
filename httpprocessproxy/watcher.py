@@ -1,20 +1,35 @@
 import asyncio
 import logging
 import threading
+from dataclasses import dataclass
+from typing import Callable, List
 
 import pywatchman
 
 logger = logging.getLogger(__name__)
 
 
+def _patterns_to_terms(pats):
+    # convert a list of globs into the equivalent watchman expression term
+    # copy/paste from
+    # https://github.com/facebook/watchman/blob/master/python/bin/watchman-make
+    if pats is None or len(pats) == 0:
+        return ["true"]
+    terms = ["anyof"]
+    for p in pats:
+        terms.append(["match", p, "wholename", {"includedotfiles": True}])
+    return terms
+
+
+@dataclass(frozen=True)
 class Watcher:
     """
     Watches a directory and calls `callback` when files change.
     """
 
-    def __init__(self, watch_path, callback):
-        self.watch_path = watch_path
-        self.callback = callback
+    watch_path: str
+    watch_patterns: List[str]  # empty means '**/*'
+    callback: Callable
 
     def _emit_notifications(self, loop):
         watchman_client = pywatchman.client()
@@ -25,7 +40,12 @@ class Watcher:
             logger.warning(watch["warning"])
         logger.debug("Watching project: %r", watch)
 
-        watchman_client.query("subscribe", watch["watch"], "watchman_sub", {})
+        query = {
+            "expression": _patterns_to_terms(self.watch_patterns),
+            "fields": ["name"],
+        }
+
+        watchman_client.query("subscribe", watch["watch"], "watchman_sub", query)
 
         watchman_client.setTimeout(None)
 

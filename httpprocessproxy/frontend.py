@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import List
 
 from . import livereload
@@ -10,18 +11,13 @@ from .watcher import Watcher
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
 class Frontend:
-    def __init__(
-        self,
-        watch_path: str,
-        bind_addr: str,
-        backend_addr: str,
-        backend_command: List[str],
-    ):
-        self.watch_path = watch_path
-        self.bind_addr = bind_addr
-        self.backend_addr = backend_addr
-        self.backend_command = backend_command
+    bind_addr: str
+    backend_command: List[str]
+    backend_addr: str
+    watch_path: str
+    watch_patterns: List[str]  # empty means '**/*'
 
     async def serve_forever(self):
         bind_host, bind_port = self.bind_addr.split(":")
@@ -38,7 +34,7 @@ class Frontend:
                 backend.on_frontend_connected, bind_host, bind_port
             )
 
-            watcher = Watcher(self.watch_path, reload)
+            watcher = Watcher(self.watch_path, self.watch_patterns, reload)
             watcher.watch_forever_in_background()
 
             done, pending = await asyncio.wait(
