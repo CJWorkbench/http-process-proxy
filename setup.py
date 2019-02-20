@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+
 from setuptools import setup
 
 from httpprocessproxy import __version__
@@ -14,16 +15,12 @@ setup(
     long_description=long_description,
     long_description_content_type="text/x-rst",
     packages=["httpprocessproxy"],
-    package_data={
-        "httpprocessproxy": ["livereload.js"],
-    },
+    package_data={"httpprocessproxy": ["livereload.js"]},
     author="Adam Hooper",
     author_email="adam@adamhooper.com",
     url="https://github.com/CJWorkbench/http-process-proxy",
     entry_points={
-        "console_scripts": [
-            "http-process-proxy = httpprocessproxy.__main__:main"
-        ]
+        "console_scripts": ["http-process-proxy = httpprocessproxy.__main__:main"]
     },
     license="MIT",
     classifiers=[
@@ -36,8 +33,6 @@ setup(
         "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
         "Topic :: Software Development :: Build Tools",
     ],
-    install_requires=[
-        "pywatchman>=1.4.1",
-        "websockets>=7.0",
-    ]
+    install_requires=["pywatchman>=1.4.1", "websockets>=7.0"],
+    extras_require={"dev": ["black", "isort", "pyflakes"]},
 )

@@ -58,8 +58,10 @@ Features
 Develop
 ~~~~~~~
 
+# ``pip3 install --user -e .[dev]`` to install development tools.
 #. Change some code.
 #. If needed, modify the *Features* and *Usage* sections in this file.
+#. ``./reformat-source.sh``
 #. Manually test according to the *Features* and *Usage* sections in this file.
    (This project is an experiment; it's missing automated tests.)
 #. Submit a pull request.
