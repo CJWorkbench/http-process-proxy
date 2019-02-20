@@ -6,8 +6,10 @@ sudo: required
 dist: xenial
 python: '3.7'
 
-script:
+install:
   - pip install -e .[dev]
+
+script:
   - pyflakes .
   - black --check .
   - isort --check-only --diff --recursive httpprocessproxy setup.py
