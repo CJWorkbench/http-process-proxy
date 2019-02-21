@@ -276,6 +276,61 @@ class ProxiedConnection:
 
 
 @dataclass(frozen=True)
+class ErrorConnection:
+    frontend_reader: asyncio.StreamReader
+    frontend_writer: asyncio.StreamWriter
+    returncode: int
+
+    def __post_init__(self):
+        asyncio.create_task(self._handle())
+
+    @property
+    def response_bytes(self) -> bytes:
+        message = b"\n".join(
+            [
+                (
+                    b"Server process exited with code "
+                    + str(self.returncode).encode("utf-8")
+                ),
+                b"Read console logs for details.",
+                b"Edit code to restart the server.",
+            ]
+        )
+
+        return b"\r\n".join(
+            [
+                b"HTTP/1.1 503 Service Unavailable",
+                b"Content-Type: text/plain; charset=utf-8",
+                b"Content-Length: " + str(len(message)).encode("utf-8"),
+                b"",
+                message,
+            ]
+        )
+
+    async def _handle(self):
+        # Read the entire request (we'll ignore it)
+        while not self.frontend_reader.at_eof():
+            await self._handle_one_request()
+
+        self.frontend_writer.close()
+        await self.frontend_writer.wait_closed()
+
+    async def _handle_one_request(self):
+        try:
+            header = await _read_http_header(self.frontend_reader)
+        except EOFError:
+            logger.debug("Connection closed; aborting handler")
+            return
+
+        # read request bytes, piping them nowhere
+        await _pipe_http_body(header, self.frontend_reader, None)
+
+        # respond with our static bytes
+        self.frontend_writer.write(self.response_bytes)
+        await self.frontend_writer.drain()
+
+
+@dataclass(frozen=True)
 class StateLoading(State):
     config: BackendConfig
     connections: Set[WaitingConnection] = field(default_factory=set)
@@ -315,8 +370,13 @@ class StateLoading(State):
             process.kill()
             return (False, StateKilling(self.config, process, self.connections))
         elif process.returncode is not None:
-            for connection in self.connections:  # TODO make errors
-                connection.report_process_exit(process.returncode)
+            # Transform each connection: it should report errors now
+            for connection in self.connections:
+                ErrorConnection(
+                    connection.frontend_reader,
+                    connection.frontend_writer,
+                    process.returncode,
+                )
             return (False, StateError(self.config, process.returncode))
         else:  # we've connected, and `process` is running
             # Make each connection connect to the backend
@@ -411,11 +471,10 @@ class StateRunning(State):
             task.cancel()
         if killed_task in done:
             self.process.kill()
-            # The connections will all fail on their own
+            # The connections will all fail on their own after the process dies
             return (True, StateKilling(self.config, self.process))
         else:
-            for connection in self.connections:
-                connection.report_process_exit(self.process.returncode)
+            # The connections will all fail on their own
             return (True, StateError(self.config, self.process.returncode))
 
 
@@ -425,65 +484,11 @@ class StateError(State):
     returncode: int
     reload: asyncio.Event = field(default_factory=asyncio.Event)
 
-    @dataclass(frozen=True)
-    class Connection:
-        frontend_reader: asyncio.StreamReader
-        frontend_writer: asyncio.StreamWriter
-        returncode: int
-
-        def __post_init__(self):
-            asyncio.create_task(self._handle())
-
-        @property
-        def response_bytes(self):
-            message = b"\n".join(
-                [
-                    (
-                        b"Server process exited with code "
-                        + str(self.returncode).encode("utf-8")
-                    ),
-                    b"Read console logs for details.",
-                    b"Edit code to restart the server.",
-                ]
-            )
-
-            return b"\r\n".join(
-                [
-                    b"HTTP/1.1 503 Service Unavailable",
-                    b"Content-Type: text/plain; charset=utf-8",
-                    b"Content-Length: " + str(len(message)).encode("utf-8"),
-                    b"",
-                    message,
-                ]
-            )
-
-        async def _handle(self):
-            # Read the entire request (we'll ignore it)
-            while not self.frontend_reader.at_eof():
-                await self._handle_one_request()
-
-            self.frontend_writer.close()
-            await self.frontend_writer.wait_closed()
-
-        async def _handle_one_request(self):
-            try:
-                header = await _read_http_header(self.frontend_reader)
-            except EOFError:
-                logger.debug("Connection closed; aborting handler")
-                return
-
-            # read request bytes, piping them nowhere
-            await _pipe_http_body(header, self.frontend_reader, None)
-
-            # respond with our static bytes
-            self.frontend_writer.write(self.response_bytes)
-            await self.frontend_writer.drain()
-
     def on_reload(self):
         self.reload.set()
 
     def on_frontend_connected(self, reader, writer):
-        self.Connection(reader, writer, self.returncode)
+        ErrorConnection(reader, writer, self.returncode)
 
     async def next_state(self):
         """
