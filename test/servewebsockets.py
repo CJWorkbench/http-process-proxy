@@ -16,7 +16,7 @@ async def _echo(websocket, _path: str):
             logger.info("Echoing client message: %r", message)
             await websocket.send(message)
     except websockets.exceptions.ConnectionClosed:
-        logger.info('Client disconnected')
+        logger.info("Client disconnected")
         # return
 
 

@@ -209,7 +209,7 @@ class ProxiedConnection:
             * Reading response from backend gives EOFError (backend died)
             * Writing response to browser gives ConnectionError (browser left)
 
-        No matter what the case, we'll clean up 
+        No matter what the case, we'll clean up by closing both connections.
         """
         try:
             backend_reader, backend_writer = await (
@@ -229,7 +229,6 @@ class ProxiedConnection:
                 break
 
         # Close both connections
-        logger.info("Connection closed; cleaning up")
         await self._close(backend_writer)
 
     async def _handle_one_request(
@@ -287,8 +286,8 @@ class ProxiedConnection:
             # from the browser -- and let the browser reconnect when it makes
             # its next request).
             try:
-                asyncio.wait(
-                    [to_backend, to_browser], return_when=asyncio.FIRST_COMPLETED
+                await asyncio.wait(
+                    {to_backend, to_browser}, return_when=asyncio.FIRST_COMPLETED
                 )
             finally:
                 # Close everything
@@ -297,12 +296,15 @@ class ProxiedConnection:
                 # and now return. The caller will close the connections.
 
     async def _close(self, backend_writer: Optional[asyncio.StreamWriter]) -> None:
+        logger.info("Connection closed; cleaning up")
         self.frontend_writer.close()
-        await self.frontend_writer.wait_closed()
+        tasks = {self.frontend_writer.wait_closed()}
 
         if backend_writer is not None:
             backend_writer.close()
-            await backend_writer.wait_closed()
+            tasks.add(backend_writer.wait_closed())
+
+        await asyncio.wait(tasks)
 
     def _munge_header_bytes(self, header_bytes: bytes) -> bytes:
         """
