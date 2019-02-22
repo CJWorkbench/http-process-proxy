@@ -64,7 +64,7 @@ async def _read_http_header(reader: asyncio.StreamReader) -> HTTPHeader:
     Read an HTTP header.
 
     Exceptions:
-        asyncio.streams.IncompleteReadError: connection closed
+        EOFError: connection closed before supplying all the header bytes.
     """
     content = await reader.readuntil(b"\r\n\r\n")
     return HTTPHeader(content)
@@ -81,8 +81,10 @@ async def _pipe_bytes(
     If `n_bytes` is supplied, stop after exactly that many bytes have been
     copied.
 
-    Stops when `reader` runs out of bytes. TODO raise error if we expected
-    more?
+    Exceptions:
+        EOFError: read failed
+        ConnectionError: write failed
+        EOFError: `n_bytes` is more bytes than `reader` can provide
     """
     block_size = 1024 * 50  # stream 50kb at a time, for progressive loading
     n_remaining = n_bytes
@@ -93,13 +95,19 @@ async def _pipe_bytes(
         else:
             n = min(n_remaining, block_size)
 
-        block = await reader.read(n)
+        block = await reader.read(n)  # raises EOFError
         if block and writer is not None:
             writer.write(block)
-            await writer.drain()
+            await writer.drain()  # raises ConnectionError
 
         if n_remaining is not None:
             n_remaining -= len(block)
+
+    if n_remaining is not None and n_remaining > 0:
+        raise EOFError(
+            "Reader only supplied %d bytes (expected %d)"
+            % (n_bytes - n_remaining, n_bytes)
+        )
 
 
 async def _pipe_http_body(
@@ -113,7 +121,9 @@ async def _pipe_http_body(
     Pass `writer=None` to ignore the body.
 
     Exceptions:
-        asyncio.streams.IncompleteReadError: connection closed
+        EOFError: read failed
+        ConnectionError: write failed
+        EOFError: header says body is N bytes; fewer bytes were piped
     """
     is_chunked = header.is_transfer_encoding_chunked
     content_length = header.content_length
@@ -186,6 +196,20 @@ class ProxiedConnection:
     async def _handle(self) -> None:
         """
         Proxy the frontend connection to the backend.
+
+        A single HTTP connection can have multiple HTTP _requests_. We support
+        HTTP/1.1 keepalive (meaning many requests happen in serial, with
+        "Forwarded" header mangling) and HTTP/1.1 UPGRADE (Websockets --
+        meaning bidirectional traffic until one side closes the connection).
+
+        At some point, one of four things will happen:
+
+            * Reading request from browser gives EOFError (browser left)
+            * Writing request to backend gives ConnectionError (backend died)
+            * Reading response from backend gives EOFError (backend died)
+            * Writing response to browser gives ConnectionError (browser left)
+
+        No matter what the case, we'll clean up 
         """
         try:
             backend_reader, backend_writer = await (
@@ -193,39 +217,52 @@ class ProxiedConnection:
             )
         except OSError:
             logger.exception("Error during connect")
-            return  # TODO finish with freader/fwriter
+            await self._close(None)
+            return
 
         # Handle requests -- even when keepalive is enabled (which means
         # multiple requests on same connection)
         while not self.frontend_reader.at_eof() and not backend_reader.at_eof():
-            await self._handle_one_request(backend_reader, backend_writer)
+            try:
+                await self._handle_one_request(backend_reader, backend_writer)
+            except (EOFError, ConnectionError):
+                break
 
         # Close both connections
-        backend_writer.close()
-        await backend_writer.wait_closed()
-        self.frontend_writer.close()
-        await self.frontend_writer.wait_closed()
+        logger.info("Connection closed; cleaning up")
+        await self._close(backend_writer)
 
     async def _handle_one_request(
         self, backend_reader: asyncio.StreamReader, backend_writer: asyncio.StreamWriter
     ) -> None:
+        """
+        Respond to one HTTP request, keeping the connection alive.
+
+        Raises EOFError or ConnectionError when the browser or backend
+        disconnects.
+        """
+
         # 1. Pipe request from frontend_reader to backend_writer
-        try:
-            request_header = await _read_http_header(self.frontend_reader)
-        except EOFError:
-            logger.debug("Connection closed; aborting handler")
-            return
+        # raises EOFError if browser disconnects
+        request_header = await _read_http_header(self.frontend_reader)
         munged_header_bytes = self._munge_header_bytes(request_header.content)
         backend_writer.write(munged_header_bytes)
+        # raises ConnectionError if backend disconnects
         await backend_writer.drain()
+        # raises EOFError if browser disconnects
+        # raises ConnectionError if backend disconnects
         await _pipe_http_body(request_header, self.frontend_reader, backend_writer)
 
         # 2. Pipe response from backend_reader to frontend_writer
         # (An HTTP connection can only write a response after the entire
         # request is transmitted.)
+        # raises EOFError if backend disconnects
         response_header = await _read_http_header(backend_reader)
         self.frontend_writer.write(response_header.content)
+        # raises ConnectionError if browser disconnects
         await self.frontend_writer.drain()
+        # raises EOFError if backend disconnects
+        # raises ConnectionError if browser disconnects
         await _pipe_http_body(response_header, backend_reader, self.frontend_writer)
 
         if response_header.content.startswith(b"HTTP/1.1 101"):
@@ -233,10 +270,39 @@ class ProxiedConnection:
             # connection, so the HTTP/1.1 rules don't apply. It's probably
             # Websockets, which has bidirectional traffic. Pipe everything
             # simultaneously.
-            await asyncio.gather(
-                _pipe_bytes(self.frontend_reader, backend_writer),
-                _pipe_bytes(backend_reader, self.frontend_writer),
+
+            to_backend = asyncio.create_task(
+                _pipe_bytes(self.frontend_reader, backend_writer)
             )
+            to_browser = asyncio.create_task(
+                _pipe_bytes(backend_reader, self.frontend_writer)
+            )
+            # When (not "if") either pipe raises EOFError or ConnectionError,
+            # cancel the tasks and return. The caller will clean up.
+            #
+            # There is no way for this task to end other than closing the
+            # connection. That's just fine. Either the web browser closes the
+            # connection (meaning we should disconnect from the backend), or
+            # the backend closes the connection (meaning we should disconnect
+            # from the browser -- and let the browser reconnect when it makes
+            # its next request).
+            try:
+                asyncio.wait(
+                    [to_backend, to_browser], return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                # Close everything
+                to_backend.cancel()
+                to_browser.cancel()
+                # and now return. The caller will close the connections.
+
+    async def _close(self, backend_writer: Optional[asyncio.StreamWriter]) -> None:
+        self.frontend_writer.close()
+        await self.frontend_writer.wait_closed()
+
+        if backend_writer is not None:
+            backend_writer.close()
+            await backend_writer.wait_closed()
 
     def _munge_header_bytes(self, header_bytes: bytes) -> bytes:
         """
@@ -261,25 +327,16 @@ class ProxiedConnection:
                 b"\r\n\r\n", b"\r\nForwarded: " + host.encode("ascii") + b"\r\n\r\n"
             )
 
-    async def _pipe(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """
-        Transcribe request body from `reader` to `writer`.
-        """
-        while not reader.at_eof():
-            block = reader.read(self.BLOCK_SIZE)
-
-            if block:
-                writer.write(block)
-                await writer.drain()
-
 
 @dataclass(frozen=True)
 class ErrorConnection:
     frontend_reader: asyncio.StreamReader
     frontend_writer: asyncio.StreamWriter
     returncode: int
+    reload: asyncio.Event
+    """
+    When set, disconnect everything.
+    """
 
     def __post_init__(self):
         asyncio.create_task(self._handle())
@@ -308,26 +365,55 @@ class ErrorConnection:
         )
 
     async def _handle(self):
-        # Read the entire request (we'll ignore it)
-        while not self.frontend_reader.at_eof():
-            await self._handle_one_request()
+        """
+        Respond to HTTP requests until browser disconnect or reload.
+
+        Browsers tend to connect with HTTP Keepalive. Upon reload we want to
+        kill the connection, so the browser reconnects under the next state.
+        """
+
+        reload_task = asyncio.create_task(self.reload.wait())
+        request_task = None
+
+        while not self.frontend_reader.at_eof() and not self.reload.is_set():
+            request_task = asyncio.create_task(self._handle_one_request())
+            done, pending = await asyncio.wait(
+                {request_task, reload_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            # if request is done, loop
+            # if reload is done, loop -- we test self.reload.is_set()
+            # if both are done, that's fine
 
         self.frontend_writer.close()
         await self.frontend_writer.wait_closed()
 
+        if reload_task in pending:
+            reload_task.cancel()
+
+        if request_task in pending:
+            await request_task  # it should finish soon: its transport closed
+
     async def _handle_one_request(self):
+        """
+        Read any HTTP request and respond with 503 Service Unavailable.
+
+        Return if the browser disconnects.
+        """
         try:
+            # Read the entire request (we'll ignore it)
+            # raises EOFError
             header = await _read_http_header(self.frontend_reader)
-        except EOFError:
+
+            # read request bytes, piping them nowhere
+            # raises EOFError
+            await _pipe_http_body(header, self.frontend_reader, None)
+
+            # respond with our static bytes
+            self.frontend_writer.write(self.response_bytes)
+            # raises ConnectionError
+            await self.frontend_writer.drain()
+        except (EOFError, ConnectionError):
             logger.debug("Connection closed; aborting handler")
-            return
-
-        # read request bytes, piping them nowhere
-        await _pipe_http_body(header, self.frontend_reader, None)
-
-        # respond with our static bytes
-        self.frontend_writer.write(self.response_bytes)
-        await self.frontend_writer.drain()
 
 
 @dataclass(frozen=True)
@@ -371,13 +457,15 @@ class StateLoading(State):
             return (False, StateKilling(self.config, process, self.connections))
         elif process.returncode is not None:
             # Transform each connection: it should report errors now
+            state = StateError(self.config, process.returncode)
             for connection in self.connections:
                 ErrorConnection(
                     connection.frontend_reader,
                     connection.frontend_writer,
                     process.returncode,
+                    state.reload,
                 )
-            return (False, StateError(self.config, process.returncode))
+            return (False, state)
         else:  # we've connected, and `process` is running
             # Make each connection connect to the backend
             [
@@ -418,6 +506,8 @@ class StateLoading(State):
                 ) as err:
                     # The connection raised -- it didn't succeed
                     logger.debug("Connect poll failed (%s); will retry", str(err))
+            else:
+                poll_task.cancel()
 
             await asyncio.sleep(0.1)
             # and loop
@@ -488,7 +578,7 @@ class StateError(State):
         self.reload.set()
 
     def on_frontend_connected(self, reader, writer):
-        ErrorConnection(reader, writer, self.returncode)
+        ErrorConnection(reader, writer, self.returncode, self.reload)
 
     async def next_state(self):
         """
@@ -548,4 +638,5 @@ class Backend:
     def on_frontend_connected(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        logger.debug("Connect with state %r", type(self.state))
         self.state.on_frontend_connected(reader, writer)

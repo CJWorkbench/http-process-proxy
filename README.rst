@@ -59,6 +59,7 @@ Features
 * Prints your web server's standard output and standard error.
 * Kills your server ``SIGKILL`` and restarts when its files change.
 * Responds with `503 Service Unavailable` if your web server crashes.
+* Closes keep-alive connections when responses may change.
 * Watches the current working directory for file modifications with
   `Watchman <https://facebook.github.io/watchman/>`_.
 * Respects `.watchmanconfig
@@ -84,6 +85,19 @@ A useful test procedure (for testing everything but Websockets)::
     # Turn on LiveReload
     touch x  # browser should show an extra file
     rm x  # browser should hide the extra file
+
+For websockets, a super-simple echo server::
+
+    python3 -m httpprocessproxy localhost:8010 localhost:8011 \
+         --exec python3 ./test/servewebsockets.py
+
+    # send a request
+    echo 'test' | ws ws://localhost:8010/ws
+
+    # keep a request open...
+    ws ws://localhost:8010/ws
+    # at this point, `touch x && rm x` would close the connection, because it
+    # switches from "running" to "killing"
 
 Maintain
 ~~~~~~~~
