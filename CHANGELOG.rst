@@ -1,3 +1,8 @@
+v0.0.7 (2019-02-22)
+~~~~~~~~~~~~~~~~~~~
+
+* Avoid race that closed Websockets connections prematurely.
+
 v0.0.6 (2019-02-22)
 ~~~~~~~~~~~~~~~~~~~
 
