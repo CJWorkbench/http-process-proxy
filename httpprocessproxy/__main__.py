@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import logging
 import os
 
 from .frontend import Frontend
@@ -19,6 +20,9 @@ def main():
         metavar="BACKEND:PORT",
         type=str,
         help="ADDRESS:PORT of backend server",
+    )
+    parser.add_argument(
+        "--debug", help="Enable (noisy) debug logging", action="store_true"
     )
     parser.add_argument(
         "-p",
@@ -53,7 +57,10 @@ def main():
         args.pattern or [],
         args.exclude or [],
     )
-    asyncio.run(frontend.serve_forever())
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    asyncio.run(frontend.serve_forever(), debug=args.debug)
 
 
 if __name__ == "__main__":

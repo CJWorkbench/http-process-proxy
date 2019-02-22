@@ -7,7 +7,6 @@ from . import livereload
 from .backend import Backend
 from .watcher import Watcher
 
-# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
