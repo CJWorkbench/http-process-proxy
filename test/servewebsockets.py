@@ -5,14 +5,19 @@ import logging
 
 import websockets
 
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def _echo(websocket, _path: str):
-    data = await websocket.recv()
-    logger.info("Echoing client data: %r", data)
-
-    await websocket.send(data)
+    try:
+        async for message in websocket:
+            logger.info("Echoing client message: %r", message)
+            await websocket.send(message)
+    except websockets.exceptions.ConnectionClosed:
+        logger.info('Client disconnected')
+        # return
 
 
 async def serve():
