@@ -1,3 +1,8 @@
+v0.0.6 (2019-02-22)
+~~~~~~~~~~~~~~~~~~~
+
+* Close Keepalive connections when changing state
+
 v0.0.5 (2019-02-22)
 ~~~~~~~~~~~~~~~~~~~
 
