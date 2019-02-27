@@ -43,6 +43,7 @@ class Watcher:
     def _emit_notifications(self, loop):
         watchman_client = pywatchman.client()
         logger.debug("Connected to Watchman")
+        watchman_client.setTimeout(None)
 
         watch = watchman_client.query("watch-project", self.watch_path)
         if "warning" in watch:
@@ -58,7 +59,6 @@ class Watcher:
         logger.debug("Watch query: %r", query)
 
         watchman_client.query("subscribe", watch["watch"], "watchman_sub", query)
-        watchman_client.setTimeout(None)
 
         while True:
             result = watchman_client.receive()  # wait for message from watchman
