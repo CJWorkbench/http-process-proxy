@@ -1,3 +1,9 @@
+v0.0.8 (2019-02-26)
+~~~~~~~~~~~~~~~~~~~
+
+* Disable timeout before querying "watch-project". Should make startup
+  more reliable. (We got a timeout on a 2015 2-core OS X machine.)
+
 v0.0.7 (2019-02-22)
 ~~~~~~~~~~~~~~~~~~~
 
