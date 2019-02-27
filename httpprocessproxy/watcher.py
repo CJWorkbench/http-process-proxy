@@ -41,9 +41,8 @@ class Watcher:
     callback: Callable
 
     def _emit_notifications(self, loop):
-        watchman_client = pywatchman.client()
+        watchman_client = pywatchman.client(timeout=None)
         logger.debug("Connected to Watchman")
-        watchman_client.setTimeout(None)
 
         watch = watchman_client.query("watch-project", self.watch_path)
         if "warning" in watch:
