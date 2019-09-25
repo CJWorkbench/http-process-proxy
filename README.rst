@@ -36,14 +36,19 @@ Where:
 
 * ``BIND:PORT`` is the address and port to listen on (e.g., ``0.0.0.0:8000``,
   ``localhost:9000``, ...)
+
 * ``BACKEND:PORT`` is the address of the server we're proxying
+
 * ``BACKENDCOMMAND ...`` is the command to run the web-server we're developing,
   which must listen on ``BACKEND:PORT``.
+
 * ``OPTIONS`` can include:
+
   * ``--pattern`` with any number of glob-style paths. Files matching *any* of
     the patterns (and not matching an ``--exclude`` pattern) can trigger a
     reload. (If unset, *any* file change triggers a reload -- the same effect
     as ``**/*``.)
+
   * ``--exclude`` with any number of glob-style paths. Files matching *any* of
     the patterns will never trigger a reload -- regardless of ``--pattern``.
 
@@ -51,18 +56,28 @@ Features
 ~~~~~~~~
 
 * Starts and proxies your web server, sending it all HTTP requests.
+
 * Supports WebSockets.
+
 * Queues HTTP requests until your web server is ready to respond.
+
 * Adds `Forwarded
   <https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded>`_
   header so your web server knows the correct hostname.
+
 * Prints your web server's standard output and standard error.
+
 * Kills your server ``SIGKILL`` and restarts when its files change.
+
 * Responds with `503 Service Unavailable` if your web server crashes.
+
 * Closes keep-alive connections when responses may change.
+
 * Forwards Chunked-encoded responses, even when keep-alive is set.
+
 * Watches the current working directory for file modifications with
   `Watchman <https://facebook.github.io/watchman/>`_.
+
 * Respects `.watchmanconfig
   <https://facebook.github.io/watchman/docs/config.html>`_.
 
