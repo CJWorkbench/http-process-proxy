@@ -1,4 +1,5 @@
 import asyncio
+import http.client
 import logging
 import re
 import subprocess
@@ -8,8 +9,9 @@ from typing import Callable, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 FORWARDED_PATTERN = re.compile(rb"(\r\nForwarded:.*?)(\r\n)", re.IGNORECASE)
-CONTENT_LENGTH_PATTERN = re.compile(rb"\r\nContent-Length:\s*(\d+)", re.IGNORECASE)
-CHUNKED_PATTERN = re.compile(rb"\r\nTransfer-Encoding:\s+chunked", re.IGNORECASE)
+CONTENT_LENGTH_PATTERN = re.compile(rb"\r\nContent-Length:\s*(\d+)\r\n", re.IGNORECASE)
+CHUNKED_PATTERN = re.compile(rb"\r\nTransfer-Encoding:\s+chunked\r\n", re.IGNORECASE)
+CHUNK_SIZE_PATTERN = re.compile(rb"[0-9A-F]+\r\n", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -41,7 +43,7 @@ class HTTPHeader:
         """
         True iff the request has Transfer-Encoding: chunked.
         """
-        CHUNKED_PATTERN.search(self.content) is not None
+        return CHUNKED_PATTERN.search(self.content) is not None
 
     @property
     def content_length(self) -> Optional[int]:
@@ -70,6 +72,57 @@ async def _read_http_header(reader: asyncio.StreamReader) -> HTTPHeader:
     return HTTPHeader(content)
 
 
+async def _pipe_http_chunked_bytes(
+    reader: asyncio.StreamReader, writer: Optional[asyncio.StreamWriter]
+) -> None:
+    """
+    Pipe HTTP Chunked-encoded bytes from `reader` to `writer`.
+
+    Return after the final chunk+crlf ("0\r\n\r\n").
+
+    Exceptions:
+        EOFError: read failed
+        ConnectionError: write failed
+        EOFError: could not read all the bytes in a chunk
+        http.client.HTTPException: a chunk did not start with numbers
+    """
+
+    async def _pipe_crlf():
+        nonlocal reader, writer
+        crlf: bytes = await reader.read(2)  # raises EOFError
+        if crlf != b"\r\n":
+            raise http.client.HTTPException(
+                r"HTTP-Chunked encoding failure: expected '\r\n', got %r" % crlf
+            )
+        if writer is not None:
+            writer.write(crlf)
+            await writer.drain()  # raises ConnectionError
+
+    while True:
+        try:
+            line: bytes = await reader.readuntil(b"\r\n")
+        except asyncio.LimitOverrunError:
+            raise http.client.HTTPException(
+                r"Invalid HTTP-Chunked message: expected 'INTEGER\r\n'"
+            )
+        except asyncio.IncompleteReadError:
+            raise EOFError("Truncated HTTP-Chunked message")
+        if CHUNK_SIZE_PATTERN.fullmatch(line) is None:
+            raise http.client.HTTPException(
+                "Invalid HTTP-Chunked length: expected integer, got %r" % line
+            )
+        if writer is not None:
+            writer.write(line)  # including b"\r\n"
+            await writer.drain()  # raises ConnectionError
+        length = int(line, 16)  # strips b"\r\n"
+        await _pipe_bytes(reader, writer, length)  # pipe the b"\r\n" at the end
+        await _pipe_crlf()
+
+    # Read final "\r\n" and exit
+    # Not yet implemented: "Trailer" (HTTP headers in the footer -- rare)
+    await _pipe_crlf()
+
+
 async def _pipe_bytes(
     reader: asyncio.StreamReader,
     writer: Optional[asyncio.StreamWriter],
@@ -89,7 +142,7 @@ async def _pipe_bytes(
     block_size = 1024 * 50  # stream 50kb at a time, for progressive loading
     n_remaining = n_bytes
 
-    while (n_remaining is None or n_remaining > 0) and not reader.at_eof():
+    while (n_remaining is None and not reader.at_eof()) or n_remaining > 0:
         if n_remaining is None:
             n = block_size
         else:
@@ -125,13 +178,10 @@ async def _pipe_http_body(
         ConnectionError: write failed
         EOFError: header says body is N bytes; fewer bytes were piped
     """
-    is_chunked = header.is_transfer_encoding_chunked
-    content_length = header.content_length
-
-    if is_chunked:
-        raise NotImplementedError
-    elif content_length is not None:
-        await _pipe_bytes(reader, writer, content_length)
+    if header.is_transfer_encoding_chunked:
+        await _pipe_http_chunked_bytes(reader, writer)
+    elif header.content_length is not None:
+        await _pipe_bytes(reader, writer, header.content_length)
     else:
         # No Content-Length, no Transfer-Encoding: chunked -> there's no body
         # and so we're already done.

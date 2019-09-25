@@ -60,6 +60,7 @@ Features
 * Kills your server ``SIGKILL`` and restarts when its files change.
 * Responds with `503 Service Unavailable` if your web server crashes.
 * Closes keep-alive connections when responses may change.
+* Forwards Chunked-encoded responses, even when keep-alive is set.
 * Watches the current working directory for file modifications with
   `Watchman <https://facebook.github.io/watchman/>`_.
 * Respects `.watchmanconfig
