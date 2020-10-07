@@ -6,5 +6,5 @@ set -e
 set -x
 
 pyflakes .
-isort --recursive setup.py httpprocessproxy
+isort setup.py httpprocessproxy
 black .

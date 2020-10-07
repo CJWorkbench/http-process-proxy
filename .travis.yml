@@ -10,7 +10,7 @@ install:
 script:
 - pyflakes .
 - black --check .
-- isort --check-only --diff --recursive httpprocessproxy setup.py
+- isort --check-only --diff httpprocessproxy setup.py
 
 deploy:
   provider: pypi
